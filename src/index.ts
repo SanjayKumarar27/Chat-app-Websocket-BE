@@ -1,76 +1,92 @@
-import { Socket } from "dgram";
 import http from "http";
-import { servicesVersion } from "typescript";
-import { WebSocket, WebSocketServer } from "ws"
+import { WebSocket, WebSocketServer } from "ws";
 
-const PORT = Number(process.env.PORT || 8081)
+// Use Render-assigned PORT or default locally
+const PORT = Number(process.env.PORT || 8081);
 
-const server = http.createServer();
-const wss = new WebSocketServer({ noServer: true })
+// Create HTTP server
+const server = http.createServer((req, res) => {
+  if (req.url === "/health") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok", uptime: process.uptime() }));
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
+});
 
-let RoomArray = new Map<string, WebSocket[]>()
+// Create WebSocket server
+const wss = new WebSocketServer({ noServer: true });
 
-let user_count = 0;
+// Room storage
+const RoomArray = new Map<string, WebSocket[]>();
 
+let userCount = 0;
+
+// Handle WebSocket connections
 wss.on("connection", (socket) => {
+  userCount++;
+  console.log(`[WS] User connected. Total: ${userCount}`);
 
-    user_count = user_count + 1;
-    console.log("user conneted " + user_count)
-    socket.on("message", (message) => {
-        try {
+  socket.on("message", (message) => {
+    try {
+      const parsed = JSON.parse(message.toString());
 
-            const parsedObject = JSON.parse(message.toString());
-
-            if (parsedObject.type === 'join') {
-                const roomId = parsedObject.payload.roomId;
-                if (!RoomArray.has(roomId)) {
-                    RoomArray.set(roomId, []);
-                }
-                RoomArray.get(roomId)?.push(socket);
-                console.log(`joined room ${roomId}`)
-            }
-
-            else if (parsedObject.type === 'chat') {
-                const id = parsedObject.payload.roomId;
-                const arr = RoomArray.get(id);
-                if (!arr) {
-                    return;
-                }
-
-                for (let i = 0; i < arr.length; i++) {
-                    arr[i]?.send(parsedObject.payload.message)
-                }
-
-            }
-        }catch (e) {
-            console.log("invalid message:",e)
-        
-     }
-    });
-
-    socket.on("close",()=>{
-        for(const[room,arr] of RoomArray.entries()){
-            const filtered=arr.filter((s)=>s!==socket);
-            if(filtered.length===0) RoomArray.delete(room);
-            else RoomArray.set(room,filtered);
+      if (parsed.type === "join") {
+        const roomId = parsed.payload.roomId;
+        if (!RoomArray.has(roomId)) {
+          RoomArray.set(roomId, []);
         }
-    });
+        RoomArray.get(roomId)!.push(socket);
+        console.log(`[WS] User joined room: ${roomId}`);
+      }
 
+      else if (parsed.type === "chat") {
+        const id = parsed.payload.roomId;
+        const arr = RoomArray.get(id);
+        if (!arr) return;
+
+        for (const client of arr) {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(parsed.payload.message);
+          }
+        }
+        console.log(`[WS] Message sent to room: ${id}`);
+      }
+    } catch (err) {
+      console.error("[WS] Invalid message:", err);
+    }
+  });
+
+  socket.on("close", () => {
+    userCount--;
+    console.log(`[WS] User disconnected. Total: ${userCount}`);
+    for (const [room, arr] of RoomArray.entries()) {
+      const filtered = arr.filter((s) => s !== socket);
+      if (filtered.length === 0) {
+        RoomArray.delete(room);
+      } else {
+        RoomArray.set(room, filtered);
+      }
+    }
+  });
 });
 
-
-server.on("upgrade",(req,socket,head)=>{
-    wss.handleUpgrade(req,socket as any,head,(ws)=>{
-        wss.emit("connection",ws,req);
-    });
+// Upgrade HTTP → WebSocket
+server.on("upgrade", (req, socket, head) => {
+  wss.handleUpgrade(req, socket as any, head, (ws) => {
+    wss.emit("connection", ws, req);
+  });
 });
 
-server.listen(PORT,()=>{
-    console.log(`listening on ${PORT}`)
+// Start server
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`[SERVER] Listening on port ${PORT}`);
 });
 
-process.on("SIGINT",()=>{
-    console.log("shutting down");
-    wss.clients.forEach((c)=>c.close());
-    server.close(()=>process.exit(0));
-})
+// Graceful shutdown
+process.on("SIGINT", () => {
+  console.log("[SERVER] Shutting down...");
+  wss.clients.forEach((client) => client.close());
+  server.close(() => process.exit(0));
+});

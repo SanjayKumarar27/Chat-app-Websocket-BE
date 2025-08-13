@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: chat-app-websocket-be
+    env: node
+    plan: free
+    region: oregon    # change to "mumbai" if you want Asia proximity
+    buildCommand: npm install && npm run build
+    startCommand: node dist/index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
